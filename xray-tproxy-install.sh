@@ -92,6 +92,214 @@ esac
 
 print_info "Архитектура: ${yellow}$arch${reset} (xray: ${yellow}$xray_arch${reset})"
 
+# -------------------- Путь к скрипту (используется для задачи cron автообновления geo-файлов) --------------------
+
+install_script_path="$0"
+if command -v readlink >/dev/null 2>&1; then
+    _script_resolved="$(readlink -f -- "$0" 2>/dev/null)"
+    [ -n "$_script_resolved" ] && [ -f "$_script_resolved" ] && install_script_path="$_script_resolved"
+elif command -v realpath >/dev/null 2>&1; then
+    _script_resolved="$(realpath -- "$0" 2>/dev/null)"
+    [ -n "$_script_resolved" ] && [ -f "$_script_resolved" ] && install_script_path="$_script_resolved"
+fi
+case "$install_script_path" in
+    /*) : ;;
+    *) install_script_path="$(pwd)/$install_script_path" ;;
+esac
+[ -f "$install_script_path" ] || install_script_path=""
+
+# -------------------- Скачивание файла --------------------
+
+download_file() {
+    url="$1"
+    output="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 15 --max-time 300 \
+            "$url" -o "$output"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$output" "$url"
+    else
+        return 1
+    fi
+}
+
+# -------------------- Получение URL ассета из последнего релиза GitHub --------------------
+
+# get_github_latest_asset <owner/repo> <asset_name> <out_var>
+get_github_latest_asset() {
+    repo="$1"
+    asset="$2"
+    out_var="$3"
+
+    api="https://api.github.com/repos/${repo}/releases/latest"
+    rfile="/tmp/xray-gh-release.json"
+
+    if ! download_file "$api" "$rfile"; then
+        rm -f "$rfile"
+        return 1
+    fi
+
+    i=0
+    url=""
+    name=""
+    while [ "$i" -lt 100 ]; do
+        name="$(jsonfilter -i "$rfile" -e "@.assets[${i}].name" 2>/dev/null)"
+        [ -z "$name" ] && break
+        if [ "$name" = "$asset" ]; then
+            url="$(jsonfilter -i "$rfile" -e "@.assets[${i}].browser_download_url" 2>/dev/null)"
+            break
+        fi
+        i=$((i + 1))
+    done
+
+    rm -f "$rfile"
+
+    if [ -z "$url" ]; then
+        return 1
+    fi
+
+    eval "${out_var}=\"\${url}\""
+    return 0
+}
+
+# -------------------- Обновление geo-файлов --------------------
+
+# Скачивает файлы geodat из последних релизов GitHub (как при установке,
+# так и по задаче cron --update-geodat). Заменяет файлы атомарно (через .tmp),
+# чтобы не оставить битый файл при обрыве связи.
+update_geodat_files() {
+    target_dir="$1"
+    failed=0
+    url=""
+
+    mkdir -p "$target_dir"
+
+    if ! command -v jsonfilter >/dev/null 2>&1; then
+        print_error "jsonfilter не найден, невозможно определить URL geo-файлов."
+        return 1
+    fi
+
+    printf "\n  Скачиваем geo-файлы в %s (последние релизы)...\n" "$target_dir"
+
+    # geoip_v2fly.dat (v2fly/geoip -> geoip.dat)
+    if get_github_latest_asset "v2fly/geoip" "geoip.dat" url; then
+        if download_file "$url" "$target_dir/geoip_v2fly.dat.tmp" && mv "$target_dir/geoip_v2fly.dat.tmp" "$target_dir/geoip_v2fly.dat"; then
+            print_success "geoip_v2fly.dat скачан."
+        else
+            rm -f "$target_dir/geoip_v2fly.dat.tmp"
+            print_error "Не удалось скачать geoip_v2fly.dat."
+            failed=1
+        fi
+    else
+        print_error "Не найден ассет geoip.dat в v2fly/geoip."
+        failed=1
+    fi
+
+    # geosite_v2fly.dat (v2fly/domain-list-community -> dlc.dat)
+    if get_github_latest_asset "v2fly/domain-list-community" "dlc.dat" url; then
+        if download_file "$url" "$target_dir/geosite_v2fly.dat.tmp" && mv "$target_dir/geosite_v2fly.dat.tmp" "$target_dir/geosite_v2fly.dat"; then
+            print_success "geosite_v2fly.dat скачан."
+        else
+            rm -f "$target_dir/geosite_v2fly.dat.tmp"
+            print_error "Не удалось скачать geosite_v2fly.dat."
+            failed=1
+        fi
+    else
+        print_error "Не найден ассет dlc.dat в v2fly/domain-list-community."
+        failed=1
+    fi
+
+    # geoip_zkeenip.dat (jameszeroX/zkeen-ip -> zkeenip.dat)
+    if get_github_latest_asset "jameszeroX/zkeen-ip" "zkeenip.dat" url; then
+        if download_file "$url" "$target_dir/geoip_zkeenip.dat.tmp" && mv "$target_dir/geoip_zkeenip.dat.tmp" "$target_dir/geoip_zkeenip.dat"; then
+            print_success "geoip_zkeenip.dat скачан."
+        else
+            rm -f "$target_dir/geoip_zkeenip.dat.tmp"
+            print_error "Не удалось скачать geoip_zkeenip.dat."
+            failed=1
+        fi
+    else
+        print_error "Не найден ассет zkeenip.dat в jameszeroX/zkeen-ip."
+        failed=1
+    fi
+
+    # geosite_zkeen.dat (jameszeroX/zkeen-domains -> zkeen.dat)
+    if get_github_latest_asset "jameszeroX/zkeen-domains" "zkeen.dat" url; then
+        if download_file "$url" "$target_dir/geosite_zkeen.dat.tmp" && mv "$target_dir/geosite_zkeen.dat.tmp" "$target_dir/geosite_zkeen.dat"; then
+            print_success "geosite_zkeen.dat скачан."
+        else
+            rm -f "$target_dir/geosite_zkeen.dat.tmp"
+            print_error "Не удалось скачать geosite_zkeen.dat."
+            failed=1
+        fi
+    else
+        print_error "Не найден ассет zkeen.dat в jameszeroX/zkeen-domains."
+        failed=1
+    fi
+
+    return "$failed"
+}
+
+# -------------------- Задача cron автообновления geo-файлов --------------------
+
+# Добавляет в /etc/crontabs/root задачу на ежедневное обновление geo-файлов
+# в 04:00 по местному времени и запускает crond.
+setup_cron_geodat() {
+    script_path="$1"
+    cron_file="/etc/crontabs/root"
+    cron_entry="0 4 * * * $script_path --update-geodat >> /var/log/xray-geoupdate.log 2>&1"
+    tmp=""
+
+    [ -n "$script_path" ] || {
+        print_warning "Не удалось определить путь к скрипту — задача cron автообновления geo-файлов не создана."
+        print_info "Добавьте её вручную в /etc/crontabs/root (пример):"
+        print_info "  0 4 * * * <путь к xray-tproxy-install.sh> --update-geodat >> /var/log/xray-geoupdate.log 2>&1"
+        return 1
+    }
+
+    mkdir -p /etc/crontabs 2>/dev/null
+    touch "$cron_file" 2>/dev/null || {
+        print_warning "Не удалось создать $cron_file — задача cron автообновления geo-файлов не создана."
+        return 1
+    }
+
+    tmp="/etc/crontabs/root.xray-tproxy.tmp.$$"
+    awk 'index($0, "--update-geodat") == 0' "$cron_file" > "$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        print_warning "Не удалось обновить $cron_file."
+        return 1
+    }
+    printf "%s\n" "$cron_entry" >> "$tmp"
+    mv "$tmp" "$cron_file"
+    chmod 644 "$cron_file" 2>/dev/null
+
+    if [ -x /etc/init.d/cron ]; then
+        /etc/init.d/cron enable >/dev/null 2>&1 || true
+        /etc/init.d/cron start >/dev/null 2>&1 || true
+    elif command -v crond >/dev/null 2>&1; then
+        crond >/dev/null 2>&1 || true
+    else
+        print_warning "crond не найден — установите пакет cron и запустите crond, иначе автообновление geo-файлов не сработает."
+    fi
+
+    print_success "Задача cron автообновления geo-файлов создана: $cron_entry"
+    return 0
+}
+
+# -------------------- Быстрый режим: только обновление geo-файлов --------------------
+
+# Запускается задачей cron (--update-geodat): обновляет geo-файлы до
+# последних версий и перезапускает xray-tproxy, чтобы новые базы вступили в силу.
+if [ "$1" = "--update-geodat" ]; then
+    update_geodat_files /usr/share/xray
+    rc=$?
+    if pidof xray >/dev/null 2>&1; then
+        /etc/init.d/xray-tproxy restart >/dev/null 2>&1 || print_warning "Не удалось перезапустить xray-tproxy после обновления geo-файлов."
+    fi
+    exit "$rc"
+fi
+
 # -------------------- Удаление --------------------
 
 remove_xray_tproxy() {
@@ -101,6 +309,14 @@ remove_xray_tproxy() {
     if [ -x /etc/init.d/xray-tproxy ]; then
         /etc/init.d/xray-tproxy stop >/dev/null 2>&1
         /etc/init.d/xray-tproxy disable >/dev/null 2>&1
+    fi
+
+    # 1.5. Удалить задачу cron автообновления geo-файлов.
+    if [ -f /etc/crontabs/root ]; then
+        tmp="/etc/crontabs/root.xray-tproxy.tmp.$$"
+        awk 'index($0, "--update-geodat") == 0' /etc/crontabs/root > "$tmp" 2>/dev/null
+        mv "$tmp" /etc/crontabs/root 2>/dev/null
+        chmod 644 /etc/crontabs/root 2>/dev/null
     fi
 
     # 2. Убрать nftables-правила и policy routing.
@@ -198,61 +414,6 @@ if ! check_internet; then
             ;;
     esac
 fi
-
-# -------------------- Скачивание файла --------------------
-
-download_file() {
-    url="$1"
-    output="$2"
-
-    if command -v curl >/dev/null 2>&1; then
-        curl -fL --connect-timeout 15 --max-time 300 \
-            "$url" -o "$output"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 -O "$output" "$url"
-    else
-        return 1
-    fi
-}
-
-# -------------------- Получение URL ассета из последнего релиза GitHub --------------------
-
-# get_github_latest_asset <owner/repo> <asset_name> <out_var>
-get_github_latest_asset() {
-    repo="$1"
-    asset="$2"
-    out_var="$3"
-
-    api="https://api.github.com/repos/${repo}/releases/latest"
-    rfile="/tmp/xray-gh-release.json"
-
-    if ! download_file "$api" "$rfile"; then
-        rm -f "$rfile"
-        return 1
-    fi
-
-    i=0
-    url=""
-    name=""
-    while [ "$i" -lt 100 ]; do
-        name="$(jsonfilter -i "$rfile" -e "@.assets[${i}].name" 2>/dev/null)"
-        [ -z "$name" ] && break
-        if [ "$name" = "$asset" ]; then
-            url="$(jsonfilter -i "$rfile" -e "@.assets[${i}].browser_download_url" 2>/dev/null)"
-            break
-        fi
-        i=$((i + 1))
-    done
-
-    rm -f "$rfile"
-
-    if [ -z "$url" ]; then
-        return 1
-    fi
-
-    eval "${out_var}=\"\${url}\""
-    return 0
-}
 
 # -------------------- Установка Xray --------------------
 
@@ -955,64 +1116,14 @@ EOF
         ;;
 esac
 
-# -------------------- Скачивание geo-файлов --------------------
+# -------------------- Скачивание geo-файлов и задача cron автообновления --------------------
 
 if [ "$offline" -eq 1 ]; then
     print_warning "Пропущена загрузка geo-файлов (оффлайн-режим)."
+    print_warning "Автообновление geo-файлов по cron не настроено."
 else
-    if ! command -v jsonfilter >/dev/null 2>&1; then
-        print_error "jsonfilter не найден, невозможно определить URL geo-файлов."
-    else
-        printf "\n  Скачиваем geo-файлы в /usr/share/xray (последние релизы)...\n"
-
-        # geoip_v2fly.dat (v2fly/geoip -> geoip.dat)
-        geoip_v2fly_url=""
-        if get_github_latest_asset "v2fly/geoip" "geoip.dat" geoip_v2fly_url; then
-            if download_file "$geoip_v2fly_url" "/usr/share/xray/geoip_v2fly.dat"; then
-                print_success "geoip_v2fly.dat скачан."
-            else
-                print_error "Не удалось скачать geoip_v2fly.dat."
-            fi
-        else
-            print_error "Не найден ассет geoip.dat в v2fly/geoip."
-        fi
-
-        # geosite_v2fly.dat (v2fly/domain-list-community -> dlc.dat)
-        geosite_v2fly_url=""
-        if get_github_latest_asset "v2fly/domain-list-community" "dlc.dat" geosite_v2fly_url; then
-            if download_file "$geosite_v2fly_url" "/usr/share/xray/geosite_v2fly.dat"; then
-                print_success "geosite_v2fly.dat скачан."
-            else
-                print_error "Не удалось скачать geosite_v2fly.dat."
-            fi
-        else
-            print_error "Не найден ассет dlc.dat в v2fly/domain-list-community."
-        fi
-
-        # geoip_zkeenip.dat (jameszeroX/zkeen-ip -> zkeenip.dat)
-        geoip_zkeenip_url=""
-        if get_github_latest_asset "jameszeroX/zkeen-ip" "zkeenip.dat" geoip_zkeenip_url; then
-            if download_file "$geoip_zkeenip_url" "/usr/share/xray/geoip_zkeenip.dat"; then
-                print_success "geoip_zkeenip.dat скачан."
-            else
-                print_error "Не удалось скачать geoip_zkeenip.dat."
-            fi
-        else
-            print_error "Не найден ассет zkeenip.dat в jameszeroX/zkeen-ip."
-        fi
-
-        # geosite_zkeen.dat (jameszeroX/zkeen-domains -> zkeen.dat)
-        geosite_zkeen_url=""
-        if get_github_latest_asset "jameszeroX/zkeen-domains" "zkeen.dat" geosite_zkeen_url; then
-            if download_file "$geosite_zkeen_url" "/usr/share/xray/geosite_zkeen.dat"; then
-                print_success "geosite_zkeen.dat скачан."
-            else
-                print_error "Не удалось скачать geosite_zkeen.dat."
-            fi
-        else
-            print_error "Не найден ассет zkeen.dat в jameszeroX/zkeen-domains."
-        fi
-    fi
+    update_geodat_files /usr/share/xray || print_warning "Некоторые geo-файлы не удалось скачать."
+    setup_cron_geodat "$install_script_path"
 fi
 
 # -------------------- Ядерные модули --------------------
@@ -1257,6 +1368,7 @@ printf "  Geo-файлы:   /usr/share/xray\n"
 printf "  nft rules:   /etc/xray/tproxy.nft\n"
 printf "  Init-скрипт: /etc/init.d/xray-tproxy\n"
 printf "  Логи:        /var/log/xray\n"
+printf "  Автообновление geo-файлов: cron task (ежедневно 04:00) -> /etc/crontabs/root\n"
 
 if [ "$dnscrypt_installed" -eq 1 ]; then
     printf "  dnscrypt:    /etc/dnscrypt-proxy2/dnscrypt-proxy.toml (включён)\n"

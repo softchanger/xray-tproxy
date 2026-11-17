@@ -1,5 +1,7 @@
 # xray-tproxy-install
 
+> 🇬🇧 [English version of this README](README_en.md)
+
 Интерактивный установщик **Xray + TPROXY** для OpenWrt (BusyBox `ash`, пакетные менеджеры `opkg` / `apk`). Ставит ядро Xray, конфигурацию прозрачного прокси через nftables TPROXY, опционально — `dnscrypt-proxy2` и `nfqws2`.
 
 ## Требования
@@ -44,10 +46,36 @@ chmod +x xray-tproxy-install.sh
 | `/etc/xray/confs/0{1..6}_*.json` | конфигурация Xray: логи, DNS (`127.0.0.53`), inbound `dokodemo-door` с TPROXY, outbound VLESS+REALITY+xHTTP, роутинг, policy |
 | `/usr/share/xray/` | geo-файлы: `geoip_v2fly.dat`, `geosite_v2fly.dat`, `geoip_zkeenip.dat`, `geosite_zkeen.dat` |
 | `/var/log/xray/` | логи доступа и ошибок |
+| `/var/log/xray-geoupdate.log` | лог автообновления geo-файлов (задача cron) |
 | `/etc/dnscrypt-proxy2/dnscrypt-proxy.toml` | конфиг dnscrypt-proxy2 (DoH: Google/Cloudflare, слушает `127.0.0.53:53`) |
 | `/etc/config/dhcp` | дописывает `noresolv`, `server 127.0.0.53`, `cachesize 0` |
 
 Роутинг в конфиге: реклама и аналитика → `block`, RU/YouTube и torrent → `direct`, всё остальное → `proxy`.
+
+## Автообновление geo-файлов
+
+При установке файлы geodat скачиваются из последних релизов на GitHub:
+
+- `geoip_v2fly.dat` — [v2fly/geoip](https://github.com/v2fly/geoip)
+- `geosite_v2fly.dat` — [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+- `geoip_zkeenip.dat` — [jameszeroX/zkeen-ip](https://github.com/jameszeroX/zkeen-ip)
+- `geosite_zkeen.dat` — [jameszeroX/zkeen-domains](https://github.com/jameszeroX/zkeen-domains)
+
+Скрипт автоматически создаёт задачу **cron**, которая каждый день в **04:00 по местному времени** проверяет релизы и обновляет все geo-файлы до последней версии, а затем перезапускает сервис `xray-tproxy`, чтобы новые базы вступили в силу. Задача записывается в `/etc/crontabs/root`:
+
+```sh
+0 4 * * * <путь к xray-tproxy-install.sh> --update-geodat >> /var/log/xray-geoupdate.log 2>&1
+```
+
+Обновить geo-файлы вручную можно в любой момент:
+
+```sh
+./xray-tproxy-install.sh --update-geodat
+```
+
+Для работы cron нужен установленный и запущенный пакет `cron` (`crond`) — скрипт попытается включить и запустить его самостоятельно при установке. Если скрипт запущен через `curl | sh` и путь к нему не удаётся определить, задача cron не создаётся — добавьте её в `/etc/crontabs/root` вручную по примеру выше.
+
+При удалении (пункт 2 меню) задача cron удаляется автоматически.
 
 ## Удаление
 
